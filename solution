@@ -1,0 +1,325 @@
+import java.util.*;
+import java.util.stream.Collectors;
+
+public class Solution implements Q10MovieBookingInterface {
+
+    private Helper10 helper;
+    Map<Integer, City> cityMap;
+    Map<Integer, Cinema> cinemaMap;
+    Map<Integer, Show> showMap;
+    BookingStrategy bookingStrategy;
+    Map<String, Ticket> ticketMap;
+
+    public Solution() {}
+
+    public void init(Helper10 helper) {
+        this.helper = helper;
+        this.cityMap = new HashMap<>();
+        this.cinemaMap = new HashMap<>();
+        this.showMap = new HashMap<>();
+        this.bookingStrategy = new LowestRowColumnBookingStrategy();
+        this.ticketMap = new HashMap<>();
+    }
+
+    public void addCinema(int cinemaId, int cityId, int screenCount, int screenRow, int screenColumn) {
+        helper.println("addCinema " + cinemaId + " " + cityId + " " + screenCount + " " + screenRow + " " + screenColumn);
+        City city = cityMap.getOrDefault(cityId, new City(cityId));
+        cityMap.putIfAbsent(cityId, city);
+
+        if (city.getCinemaMap().containsKey(cinemaId)) return;
+
+        Cinema cinema = new Cinema(cinemaId);
+        for (int i = 0; i < screenCount; i++) {
+            cinema.addScreen(new Screen(i, screenRow, screenColumn));
+        }
+        cinemaMap.put(cinemaId, cinema);
+        city.addCinema(cinema);
+    }
+
+    public void addShow(int showId, int movieId, int cinemaId, int screenIndex, long startTime, long endTime) {
+        helper.println("addShow " + showId + " " + movieId + " " + cinemaId + " " + screenIndex + " " + startTime + " " + endTime);
+        if (!cinemaMap.containsKey(cinemaId)) return;
+        Cinema cinema = cinemaMap.get(cinemaId);
+        if (!cinema.getScreenMap().containsKey(screenIndex)) return;
+
+        Screen screen = cinema.getScreenMap().get(screenIndex);
+        for (Show s : screen.getShows()) {
+            Movie m = s.getMovie();
+            long mst = m.getStartTime();
+            long met = m.getEndTime();
+            if ((startTime >= mst && startTime < met) || (endTime > mst && endTime <= met) || (mst >= startTime && met <= endTime)) {
+                return; // overlapping show
+            }
+        }
+
+        Movie movie = new Movie(movieId, startTime, endTime);
+        Show show = new Show(showId, movie, screen);
+        screen.getShows().add(show);
+        showMap.put(showId, show);
+    }
+
+    public List<String> bookTicket(String ticketId, int showId, int ticketsCount) {
+        helper.println("bookTicket " + ticketId + " " + showId + " " + ticketsCount);
+        List<String> res = new ArrayList<>();
+        if (ticketsCount == 0 || !showMap.containsKey(showId)) return res;
+
+        Show show = showMap.get(showId);
+        List<List<Integer>> bookedSeats = bookingStrategy.bookSeats(show, ticketsCount);
+
+        if (bookedSeats.isEmpty()) return res;
+
+        Ticket ticket = new Ticket(ticketId, show);
+        ticket.setBookedSeat(bookedSeats);
+        ticket.setTicketStatus(TicketStatus.CONFIRMED);
+        ticketMap.put(ticketId, ticket);
+
+        for (List<Integer> seat : bookedSeats) {
+            res.add(seat.get(0) + "-" + seat.get(1));
+        }
+        return res;
+    }
+
+    public boolean cancelTicket(String ticketId) {
+        helper.println("cancelTicket " + ticketId);
+        if (!ticketMap.containsKey(ticketId)) return false;
+
+        Ticket ticket = ticketMap.get(ticketId);
+        if (ticket.getTicketStatus() == TicketStatus.CANCELLED) return false;
+
+        Show show = ticket.getShow();
+        for (List<Integer> seat : ticket.getBookedSeat()) {
+            show.updateSeat(seat.get(0), seat.get(1), false);
+        }
+        ticket.setTicketStatus(TicketStatus.CANCELLED);
+        return true;
+    }
+
+    public int getFreeSeatsCount(int showId) {
+        helper.println("getFreeSeatsCount " + showId);
+        if (!showMap.containsKey(showId)) return 0;
+        return showMap.get(showId).getAvailableSeat();
+    }
+
+    public List<Integer> listCinemas(int movieId, int cityId) {
+        helper.println("listCinemas " + movieId + " " + cityId);
+        if (!cityMap.containsKey(cityId)) return new ArrayList<>();
+
+        List<Integer> res = new ArrayList<>();
+        for (Cinema cinema : cityMap.get(cityId).getCinemaMap().values()) {
+            for (Screen screen : cinema.getScreenMap().values()) {
+                for (Show show : screen.getShows()) {
+                    if (show.getMovie().getId() == movieId) {
+                        res.add(cinema.getId());
+                        break;
+                    }
+                }
+                if (res.contains(cinema.getId())) break;
+            }
+        }
+        return res.stream().distinct().sorted().collect(Collectors.toList());
+    }
+
+    public List<Integer> listShows(int movieId, int cinemaId) {
+        if (!cinemaMap.containsKey(cinemaId)) return new ArrayList<>();
+        List<Show> shows = new ArrayList<>();
+        Cinema cinema = cinemaMap.get(cinemaId);
+        for (Screen screen : cinema.getScreenMap().values()) {
+            for (Show show : screen.getShows()) {
+                if (show.getMovie().getId() == movieId) shows.add(show);
+            }
+        }
+
+        // Sort by descending startTime, then ascending showId
+        Collections.sort(shows, (a, b) -> {
+            if (a.getMovie().getStartTime() != b.getMovie().getStartTime()) {
+                return Long.compare(b.getMovie().getStartTime(), a.getMovie().getStartTime());
+            } else {
+                return a.getId() - b.getId();
+            }
+        });
+
+        List<Integer> res = new ArrayList<>();
+        for (Show show : shows) res.add(show.getId());
+        return res;
+    }
+}
+
+// ----------------- Booking Strategy -----------------
+class LowestRowColumnBookingStrategy implements BookingStrategy {
+    @Override
+    public List<List<Integer>> bookSeats(Show show, int seatCount) {
+        List<List<Integer>> res = new ArrayList<>();
+        if (show.getAvailableSeat() < seatCount) return res;
+
+        boolean[][] seats = show.getSeats();
+        int n = seats.length;
+        int m = seats[0].length;
+
+        // Try to book continuous seats
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j <= m - seatCount; j++) {
+                boolean available = true;
+                for (int k = 0; k < seatCount; k++) {
+                    if (seats[i][j + k]) {
+                        available = false;
+                        break;
+                    }
+                }
+                if (available) {
+                    for (int k = 0; k < seatCount; k++) {
+                        res.add(Arrays.asList(i, j + k));
+                        show.updateSeat(i, j + k, true);
+                    }
+                    return res;
+                }
+            }
+        }
+
+        // If continuous seats not found, pick any free seats
+        for (int i = 0; i < n && seatCount > 0; i++) {
+            for (int j = 0; j < m && seatCount > 0; j++) {
+                if (!seats[i][j]) {
+                    res.add(Arrays.asList(i, j));
+                    show.updateSeat(i, j, true);
+                    seatCount--;
+                }
+            }
+        }
+        return res;
+    }
+}
+
+// ----------------- Interfaces -----------------
+interface BookingStrategy {
+    List<List<Integer>> bookSeats(Show show, int seatCount);
+}
+
+// interface Q10MovieBookingInterface {
+//     void init(Helper10 helper);
+//     void addCinema(int cinemaId, int cityId, int screenCount, int screenRow, int screenColumn);
+//     void addShow(int showId, int movieId, int cinemaId, int screenIndex, long startTime, long endTime);
+//     List<String> bookTicket(String ticketId, int showId, int ticketsCount);
+//     boolean cancelTicket(String ticketId);
+//     int getFreeSeatsCount(int showId);
+//     List<Integer> listCinemas(int movieId, int cityId);
+//     List<Integer> listShows(int movieId, int cinemaId);
+// }
+
+// ----------------- Helper -----------------
+// class Helper10 {
+//     void print(String s) { System.out.print(s); }
+//     void println(String s) { System.out.println(s); }
+// }
+
+// ----------------- Domain Classes -----------------
+enum TicketStatus { CONFIRMED, CANCELLED, PENDING }
+
+class Ticket {
+    private final String id;
+    private Show show;
+    private List<List<Integer>> bookedSeat;
+    private TicketStatus ticketStatus;
+
+    public Ticket(String id, Show show) {
+        this.id = id;
+        this.show = show;
+        this.bookedSeat = new ArrayList<>();
+        this.ticketStatus = TicketStatus.PENDING;
+    }
+
+    public String getId() { return id; }
+    public Show getShow() { return show; }
+    public List<List<Integer>> getBookedSeat() { return bookedSeat; }
+    public void setBookedSeat(List<List<Integer>> bookedSeat) { this.bookedSeat = bookedSeat; }
+    public TicketStatus getTicketStatus() { return ticketStatus; }
+    public void setTicketStatus(TicketStatus ticketStatus) { this.ticketStatus = ticketStatus; }
+}
+
+class Show {
+    private final Integer id;
+    private Movie movie;
+    private Screen screen;
+    boolean[][] seats;
+
+    public Show(Integer id, Movie movie, Screen screen) {
+        this.id = id;
+        this.movie = movie;
+        this.screen = screen;
+        seats = new boolean[screen.getRowCount()][screen.getColumnCount()];
+    }
+
+    public void updateSeat(int row, int col, boolean val) { seats[row][col] = val; }
+
+    public Integer getId() { return id; }
+    public Movie getMovie() { return movie; }
+    public Screen getScreen() { return screen; }
+    public boolean[][] getSeats() { return seats; }
+    public int getAvailableSeat() {
+        int cnt = 0;
+        for (boolean[] row : seats) for (boolean seat : row) if (!seat) cnt++;
+        return cnt;
+    }
+}
+
+class Screen {
+    private final Integer id;
+    private List<Show> shows;
+    private int rowCount, columnCount;
+
+    public Screen(Integer id, int rowCount, int columnCount) {
+        this.id = id;
+        this.shows = new ArrayList<>();
+        this.rowCount = rowCount;
+        this.columnCount = columnCount;
+    }
+
+    public Integer getId() { return id; }
+    public List<Show> getShows() { return shows; }
+    public void setShows(List<Show> shows) { this.shows = shows; }
+    public int getRowCount() { return rowCount; }
+    public int getColumnCount() { return columnCount; }
+    public void addShow(Show show) { shows.add(show); }
+}
+
+class Movie {
+    private final Integer id;
+    private long startTime, endTime;
+
+    public Movie(Integer id, long startTime, long endTime) {
+        this.id = id;
+        this.startTime = startTime;
+        this.endTime = endTime;
+    }
+
+    public Integer getId() { return id; }
+    public long getStartTime() { return startTime; }
+    public long getEndTime() { return endTime; }
+}
+
+class Cinema {
+    private final Integer id;
+    private final Map<Integer, Screen> screenMap;
+
+    public Cinema(Integer id) {
+        this.id = id;
+        this.screenMap = new HashMap<>();
+    }
+
+    public Integer getId() { return id; }
+    public Map<Integer, Screen> getScreenMap() { return screenMap; }
+    public void addScreen(Screen screen) { screenMap.putIfAbsent(screen.getId(), screen); }
+}
+
+class City {
+    private final Integer id;
+    private final Map<Integer, Cinema> cinemaMap;
+
+    public City(Integer id) {
+        this.id = id;
+        this.cinemaMap = new HashMap<>();
+    }
+
+    public Integer getId() { return id; }
+    public Map<Integer, Cinema> getCinemaMap() { return cinemaMap; }
+    public void addCinema(Cinema cinema) { cinemaMap.putIfAbsent(cinema.getId(), cinema); }
+}
